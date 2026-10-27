@@ -1,0 +1,57 @@
+# NOT ACTIVE in the CarePlet repository. Copy only into an approved separate
+# public national-policy repository using prepare_bundle.mjs.
+name: Verify and publish national insurance policy
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: 'One-time first feed creation only (never reset a previous feed)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: national-policy-publisher
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.event.repository.private == false && vars.POLICY_SERVICE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+          persist-credentials: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Offline parser and signing regression tests
+        run: node --test collector.test.mjs
+      - name: Collect official data and sign locally
+        env:
+          POLICY_SIGNING_KEY: ${{ secrets.POLICY_SIGNING_KEY }}
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+        shell: bash
+        run: |
+          if [ "$BOOTSTRAP" = "true" ] && [ ! -f public/latest.json ]; then
+            node publisher.mjs --bootstrap
+          else
+            node publisher.mjs
+          fi
+      - name: Publish only signed public national policy
+        # Approval for this automation's commits is separate from app-repo commits.
+        run: |
+          git config user.name 'CarePlet policy publisher'
+          git config user.email 'policy-publisher@users.noreply.github.com'
+          git add -- public/latest.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'Refresh verified national insurance policy'
+          git push origin HEAD:main
+      - name: Safe failure summary
+        if: failure()
+        run: echo 'Policy update failed. Previous published file unchanged; operator must investigate. Clients stop new completion after expiry.' >> "$GITHUB_STEP_SUMMARY"
